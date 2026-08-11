@@ -1,0 +1,537 @@
+---
+- name: Ubuntu 24.04 CIS Level 1 OpenSCAP Assessment
+  hosts: ubuntu
+  become: true
+  gather_facts: false
+
+  vars:
+
+    # ============================================================
+    # Fixed Ubuntu 24.04 CIS Level 1 configuration
+    # ============================================================
+
+    ssg_version: "0.1.81"
+
+    cis_profile: "xccdf_org.ssgproject.content_profile_cis_level1_server"
+
+    ssg_dir: "/usr/share/xml/scap/ssg/content"
+
+    datastream: "{{ ssg_dir }}/ssg-ubuntu2404-ds.xml"
+
+    # ============================================================
+    # Remote server working directory
+    # ============================================================
+
+    scan_dir: "/var/lib/oscap"
+
+    results_file: "{{ scan_dir }}/results_{{ inventory_hostname }}.xml"
+
+    report_file: "{{ scan_dir }}/report_{{ inventory_hostname }}.html"
+
+    remediation_file: "{{ scan_dir }}/remediation_{{ inventory_hostname }}.sh"
+
+    # ============================================================
+    # Upstream SSG
+    # ============================================================
+
+    ssg_zip: "/tmp/scap-security-guide-{{ ssg_version }}.zip"
+
+    ssg_download_url: >-
+      https://github.com/ComplianceAsCode/content/releases/download/v{{ ssg_version }}/scap-security-guide-{{ ssg_version }}.zip
+
+    # ============================================================
+    # Semaphore container storage
+    # ============================================================
+
+    semaphore_base_dir: "/tmp/semaphore/oscap"
+
+    semaphore_server_dir: "{{ semaphore_base_dir }}/{{ inventory_hostname }}"
+
+
+  tasks:
+
+    # ============================================================
+    # 1. Verify Ubuntu 24.04
+    # ============================================================
+
+    - name: Check Ubuntu version
+      ansible.builtin.command:
+        cmd: grep '^VERSION_ID=' /etc/os-release
+      register: ubuntu_version
+      changed_when: false
+
+
+    - name: Verify Ubuntu 24.04
+      ansible.builtin.assert:
+        that:
+          - '"VERSION_ID=\"24.04\"" in ubuntu_version.stdout'
+        fail_msg: >-
+          This playbook is specifically for Ubuntu 24.04.
+          Target does not appear to be Ubuntu 24.04.
+
+
+    # ============================================================
+    # 2. Enable Universe repository
+    # ============================================================
+
+    - name: Enable Universe repository
+      ansible.builtin.apt_repository:
+        repo: "deb http://archive.ubuntu.com/ubuntu noble universe"
+        state: present
+        filename: ubuntu-universe
+
+
+    # ============================================================
+    # 3. Update APT cache
+    # ============================================================
+
+    - name: Update APT cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+
+    # ============================================================
+    # 4. Verify OpenSCAP package availability
+    # ============================================================
+
+    - name: Check OpenSCAP package availability
+      ansible.builtin.command:
+        cmd: apt-cache policy openscap-scanner
+      register: openscap_package
+      changed_when: false
+
+
+    - name: Display OpenSCAP package information
+      ansible.builtin.debug:
+        var: openscap_package.stdout_lines
+
+
+    - name: Verify OpenSCAP package is available
+      ansible.builtin.assert:
+        that:
+          - "'Candidate: (none)' not in openscap_package.stdout"
+        fail_msg: >-
+          openscap-scanner is not available from the configured
+          Ubuntu 24.04 repositories.
+
+
+    # ============================================================
+    # 5. Install OpenSCAP utilities
+    # ============================================================
+
+    - name: Install OpenSCAP and utilities
+      ansible.builtin.apt:
+        name:
+          - openscap-scanner
+          - unzip
+          - curl
+        state: present
+
+
+    # ============================================================
+    # 6. Verify OpenSCAP
+    # ============================================================
+
+    - name: Check OpenSCAP version
+      ansible.builtin.command:
+        cmd: oscap --version
+      register: oscap_version
+      changed_when: false
+
+
+    - name: Display OpenSCAP version
+      ansible.builtin.debug:
+        var: oscap_version.stdout_lines
+
+
+    # ============================================================
+    # 7. Create SSG directory
+    # ============================================================
+
+    - name: Create SSG content directory
+      ansible.builtin.file:
+        path: "{{ ssg_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+
+    # ============================================================
+    # 8. Check Ubuntu 24.04 datastream
+    # ============================================================
+
+    - name: Check Ubuntu 24.04 SSG datastream
+      ansible.builtin.stat:
+        path: "{{ datastream }}"
+      register: datastream_stat
+
+
+    # ============================================================
+    # 9. Download upstream SSG content
+    # ============================================================
+
+    - name: Download SCAP Security Guide
+      ansible.builtin.get_url:
+        url: "{{ ssg_download_url }}"
+        dest: "{{ ssg_zip }}"
+        mode: "0644"
+        timeout: 120
+      when: not datastream_stat.stat.exists
+
+
+    # ============================================================
+    # 10. Extract Ubuntu 24.04 datastream
+    # ============================================================
+
+    - name: Extract Ubuntu 24.04 SSG datastream
+      ansible.builtin.command:
+        cmd: >
+          unzip -j -o
+          "{{ ssg_zip }}"
+          "*/ssg-ubuntu2404-ds.xml"
+          -d "{{ ssg_dir }}"
+      when: not datastream_stat.stat.exists
+
+
+    # ============================================================
+    # 11. Verify datastream
+    # ============================================================
+
+    - name: Verify Ubuntu 24.04 datastream
+      ansible.builtin.stat:
+        path: "{{ datastream }}"
+      register: datastream_final
+
+
+    - name: Ensure Ubuntu 24.04 datastream exists
+      ansible.builtin.assert:
+        that:
+          - datastream_final.stat.exists
+          - datastream_final.stat.size > 0
+        fail_msg: >-
+          Ubuntu 24.04 SSG datastream was not found:
+          {{ datastream }}
+
+
+    # ============================================================
+    # 12. Display fixed scan configuration
+    # ============================================================
+
+    - name: Display scan configuration
+      ansible.builtin.debug:
+        msg:
+          - "OS              : Ubuntu 24.04"
+          - "SSG Version     : {{ ssg_version }}"
+          - "Datastream      : {{ datastream }}"
+          - "CIS Profile     : {{ cis_profile }}"
+
+
+    # ============================================================
+    # 13. Verify CIS Level 1 profile
+    # ============================================================
+
+    - name: Check CIS Level 1 profile
+      ansible.builtin.command:
+        cmd: oscap info "{{ datastream }}"
+      register: oscap_info
+      changed_when: false
+
+
+    - name: Verify CIS Level 1 profile
+      ansible.builtin.assert:
+        that:
+          - cis_profile in oscap_info.stdout
+        fail_msg: >-
+          CIS Level 1 Server profile was not found in:
+          {{ datastream }}
+
+
+    # ============================================================
+    # 14. Create remote OpenSCAP directory
+    # ============================================================
+
+    - name: Create OpenSCAP scan directory
+      ansible.builtin.file:
+        path: "{{ scan_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+
+    # ============================================================
+    # 15. Remove previous files
+    # ============================================================
+
+    - name: Remove previous XML result
+      ansible.builtin.file:
+        path: "{{ results_file }}"
+        state: absent
+
+
+    - name: Remove previous HTML report
+      ansible.builtin.file:
+        path: "{{ report_file }}"
+        state: absent
+
+
+    - name: Remove previous remediation script
+      ansible.builtin.file:
+        path: "{{ remediation_file }}"
+        state: absent
+
+
+    # ============================================================
+    # 16. Run CIS Level 1 scan
+    # ============================================================
+
+    - name: Run Ubuntu 24.04 CIS Level 1 assessment
+      ansible.builtin.command:
+        cmd: >
+          oscap xccdf eval
+          --profile "{{ cis_profile }}"
+          --results "{{ results_file }}"
+          --report "{{ report_file }}"
+          "{{ datastream }}"
+      register: oscap_scan
+      changed_when: false
+      failed_when: oscap_scan.rc not in [0, 2]
+
+
+    # ============================================================
+    # 17. Display scan output
+    # ============================================================
+
+    - name: Display OpenSCAP scan output
+      ansible.builtin.debug:
+        var: oscap_scan.stdout_lines
+
+
+    # ============================================================
+    # 18. Display warnings/errors
+    # ============================================================
+
+    - name: Display OpenSCAP stderr
+      ansible.builtin.debug:
+        var: oscap_scan.stderr_lines
+      when:
+        - oscap_scan.stderr_lines is defined
+        - oscap_scan.stderr_lines | length > 0
+
+
+    # ============================================================
+    # 19. Display return code
+    # ============================================================
+
+    - name: Display OpenSCAP return code
+      ansible.builtin.debug:
+        msg: "OpenSCAP return code: {{ oscap_scan.rc }}"
+
+
+    # ============================================================
+    # 20. Verify XML result
+    # ============================================================
+
+    - name: Check XML result
+      ansible.builtin.stat:
+        path: "{{ results_file }}"
+      register: results_stat
+
+
+    # ============================================================
+    # 21. Verify HTML report
+    # ============================================================
+
+    - name: Check HTML report
+      ansible.builtin.stat:
+        path: "{{ report_file }}"
+      register: report_stat
+
+
+    # ============================================================
+    # 22. Validate reports
+    # ============================================================
+
+    - name: Verify reports were generated
+      ansible.builtin.assert:
+        that:
+          - results_stat.stat.exists
+          - report_stat.stat.exists
+          - results_stat.stat.size > 0
+          - report_stat.stat.size > 0
+        fail_msg: "OpenSCAP did not generate the expected reports."
+
+
+    # ============================================================
+    # 23. Extract XCCDF TestResult ID
+    # ============================================================
+
+    - name: Extract XCCDF TestResult ID
+      ansible.builtin.shell:
+        cmd: >
+          sed -n
+          's/.*<TestResult[^>]*id="\([^"]*\)".*/\1/p'
+          "{{ results_file }}" |
+          head -n 1
+      register: result_id
+      changed_when: false
+
+
+    - name: Display XCCDF TestResult ID
+      ansible.builtin.debug:
+        msg: "XCCDF TestResult ID: {{ result_id.stdout }}"
+
+
+    # ============================================================
+    # 24. Verify TestResult ID
+    # ============================================================
+
+    - name: Verify XCCDF TestResult ID was found
+      ansible.builtin.assert:
+        that:
+          - result_id.stdout | length > 0
+        fail_msg: >-
+          Unable to extract the XCCDF TestResult ID from:
+          {{ results_file }}
+
+
+    # ============================================================
+    # 25. Generate remediation script from scan results
+    # ============================================================
+
+    - name: Generate Bash remediation script
+      ansible.builtin.command:
+        cmd: >
+          oscap xccdf generate fix
+          --fix-type bash
+          --output "{{ remediation_file }}"
+          --result-id "{{ result_id.stdout }}"
+          "{{ results_file }}"
+      register: remediation_generation
+      changed_when: true
+
+
+    # ============================================================
+    # 26. Verify remediation script
+    # ============================================================
+
+    - name: Check remediation script
+      ansible.builtin.stat:
+        path: "{{ remediation_file }}"
+      register: remediation_stat
+
+
+    - name: Verify remediation script was generated
+      ansible.builtin.assert:
+        that:
+          - remediation_stat.stat.exists
+          - remediation_stat.stat.size > 0
+        fail_msg: >-
+          OpenSCAP remediation script was not generated.
+
+
+    # ============================================================
+    # 27. Set remediation script permissions
+    # ============================================================
+
+    - name: Set remediation script permissions
+      ansible.builtin.file:
+        path: "{{ remediation_file }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+
+    # ============================================================
+    # 28. Display generated file information
+    # ============================================================
+
+    - name: Display generated files
+      ansible.builtin.debug:
+        msg:
+          - "=============================================="
+          - "OPENSCAP ASSESSMENT COMPLETED"
+          - "=============================================="
+          - "Server        : {{ inventory_hostname }}"
+          - "OS            : Ubuntu 24.04"
+          - "Profile       : {{ cis_profile }}"
+          - "Result ID     : {{ result_id.stdout }}"
+          - ""
+          - "XML Result    : {{ results_file }}"
+          - "HTML Report   : {{ report_file }}"
+          - "Remediation   : {{ remediation_file }}"
+          - ""
+          - "Remediation was GENERATED ONLY."
+          - "Remediation was NOT EXECUTED."
+          - "=============================================="
+
+
+    # ============================================================
+    # 29. Create directory on Semaphore
+    # ============================================================
+
+    - name: Create server directory on Semaphore
+      ansible.builtin.file:
+        path: "{{ semaphore_server_dir }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      become: false
+
+
+    # ============================================================
+    # 30. Fetch XML result to Semaphore
+    # ============================================================
+
+    - name: Fetch XML result to Semaphore
+      ansible.builtin.fetch:
+        src: "{{ results_file }}"
+        dest: "{{ semaphore_server_dir }}/results_{{ inventory_hostname }}.xml"
+        flat: true
+
+
+    # ============================================================
+    # 31. Fetch HTML report to Semaphore
+    # ============================================================
+
+    - name: Fetch HTML report to Semaphore
+      ansible.builtin.fetch:
+        src: "{{ report_file }}"
+        dest: "{{ semaphore_server_dir }}/report_{{ inventory_hostname }}.html"
+        flat: true
+
+
+    # ============================================================
+    # 32. Fetch remediation script to Semaphore
+    # ============================================================
+
+    - name: Fetch remediation script to Semaphore
+      ansible.builtin.fetch:
+        src: "{{ remediation_file }}"
+        dest: "{{ semaphore_server_dir }}/remediation_{{ inventory_hostname }}.sh"
+        flat: true
+
+
+    # ============================================================
+    # 33. Final status
+    # ============================================================
+
+    - name: Assessment and remediation generation completed
+      ansible.builtin.debug:
+        msg:
+          - "=================================================="
+          - "ASSESSMENT PIPELINE COMPLETED"
+          - "=================================================="
+          - "Server: {{ inventory_hostname }}"
+          - ""
+          - "Files available on Semaphore:"
+          - "{{ semaphore_server_dir }}/results_{{ inventory_hostname }}.xml"
+          - "{{ semaphore_server_dir }}/report_{{ inventory_hostname }}.html"
+          - "{{ semaphore_server_dir }}/remediation_{{ inventory_hostname }}.sh"
+          - ""
+          - "IMPORTANT:"
+          - "The remediation script has NOT been executed."
+          - "It is available for manual review."
+          - "=================================================="
