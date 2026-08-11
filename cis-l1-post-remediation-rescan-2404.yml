@@ -1,0 +1,337 @@
+---
+- name: Ubuntu 24.04 CIS Level 1 Post-Remediation Validation Scan
+  hosts: ubuntu
+  become: true
+  gather_facts: false
+
+  vars:
+
+    # ============================================================
+    # Fixed Ubuntu 24.04 CIS Level 1 configuration
+    # ============================================================
+
+    cis_profile: "xccdf_org.ssgproject.content_profile_cis_level1_server"
+
+    ssg_dir: "/usr/share/xml/scap/ssg/content"
+
+    datastream: "{{ ssg_dir }}/ssg-ubuntu2404-ds.xml"
+
+    # ============================================================
+    # Remote OpenSCAP directory
+    # ============================================================
+
+    scan_dir: "/var/lib/oscap"
+
+    # ============================================================
+    # Post-remediation filenames
+    # These will NOT overwrite the original assessment files
+    # ============================================================
+
+    post_remediation_results_file: >-
+      {{ scan_dir }}/cis_l1_post_remediation_validation_results_{{ inventory_hostname }}.xml
+
+    post_remediation_report_file: >-
+      {{ scan_dir }}/cis_l1_post_remediation_validation_report_{{ inventory_hostname }}.html
+
+    # ============================================================
+    # Semaphore storage
+    # ============================================================
+
+    semaphore_base_dir: "/tmp/semaphore/oscap-post-remediation"
+
+    semaphore_server_dir: >-
+      {{ semaphore_base_dir }}/{{ inventory_hostname }}
+
+
+  tasks:
+
+    # ============================================================
+    # 1. Verify Ubuntu 24.04
+    # ============================================================
+
+    - name: Check Ubuntu version
+      ansible.builtin.command:
+        cmd: grep '^VERSION_ID=' /etc/os-release
+      register: ubuntu_version
+      changed_when: false
+
+
+    - name: Verify Ubuntu 24.04
+      ansible.builtin.assert:
+        that:
+          - '"VERSION_ID=\"24.04\"" in ubuntu_version.stdout'
+        fail_msg: >-
+          This playbook is specifically for Ubuntu 24.04.
+          Target does not appear to be Ubuntu 24.04.
+
+
+    # ============================================================
+    # 2. Verify OpenSCAP is installed
+    # ============================================================
+
+    - name: Check OpenSCAP installation
+      ansible.builtin.command:
+        cmd: oscap --version
+      register: oscap_version
+      changed_when: false
+
+
+    - name: Display OpenSCAP version
+      ansible.builtin.debug:
+        var: oscap_version.stdout_lines
+
+
+    # ============================================================
+    # 3. Verify Ubuntu 24.04 SSG datastream
+    # ============================================================
+
+    - name: Check Ubuntu 24.04 SSG datastream
+      ansible.builtin.stat:
+        path: "{{ datastream }}"
+      register: datastream_stat
+
+
+    - name: Verify Ubuntu 24.04 SSG datastream exists
+      ansible.builtin.assert:
+        that:
+          - datastream_stat.stat.exists
+          - datastream_stat.stat.size > 0
+        fail_msg: >-
+          Ubuntu 24.04 SSG datastream does not exist:
+          {{ datastream }}
+
+          Run the initial OpenSCAP installation/assessment
+          playbook first.
+
+
+    # ============================================================
+    # 4. Verify CIS Level 1 profile
+    # ============================================================
+
+    - name: Check CIS Level 1 profile
+      ansible.builtin.command:
+        cmd: oscap info "{{ datastream }}"
+      register: oscap_info
+      changed_when: false
+
+
+    - name: Verify CIS Level 1 profile exists
+      ansible.builtin.assert:
+        that:
+          - cis_profile in oscap_info.stdout
+        fail_msg: >-
+          CIS Level 1 Server profile was not found in:
+          {{ datastream }}
+
+
+    # ============================================================
+    # 5. Display scan configuration
+    # ============================================================
+
+    - name: Display post-remediation scan configuration
+      ansible.builtin.debug:
+        msg:
+          - "=================================================="
+          - "POST-REMEDIATION CIS L1 VALIDATION"
+          - "=================================================="
+          - "Server       : {{ inventory_hostname }}"
+          - "OS           : Ubuntu 24.04"
+          - "Profile      : {{ cis_profile }}"
+          - "Datastream   : {{ datastream }}"
+          - ""
+          - "This is a VALIDATION scan."
+          - "No remediation will be generated."
+          - "No remediation will be executed."
+          - "=================================================="
+
+
+    # ============================================================
+    # 6. Remove ONLY previous post-remediation files
+    #
+    # Original assessment files are NOT touched.
+    # ============================================================
+
+    - name: Remove previous post-remediation XML result
+      ansible.builtin.file:
+        path: "{{ post_remediation_results_file }}"
+        state: absent
+
+
+    - name: Remove previous post-remediation HTML report
+      ansible.builtin.file:
+        path: "{{ post_remediation_report_file }}"
+        state: absent
+
+
+    # ============================================================
+    # 7. Run post-remediation CIS Level 1 scan
+    # ============================================================
+
+    - name: Run post-remediation CIS Level 1 validation
+      ansible.builtin.command:
+        cmd: >
+          oscap xccdf eval
+          --profile "{{ cis_profile }}"
+          --results "{{ post_remediation_results_file }}"
+          --report "{{ post_remediation_report_file }}"
+          "{{ datastream }}"
+      register: post_remediation_scan
+      changed_when: false
+
+      # OpenSCAP:
+      # 0 = no findings
+      # 2 = assessment completed with findings
+      #
+      # Both are valid assessment outcomes.
+      # Other return codes indicate an execution problem.
+
+      failed_when: post_remediation_scan.rc not in [0, 2]
+
+
+    # ============================================================
+    # 8. Display scan output
+    # ============================================================
+
+    - name: Display post-remediation scan output
+      ansible.builtin.debug:
+        var: post_remediation_scan.stdout_lines
+
+
+    # ============================================================
+    # 9. Display warnings/errors
+    # ============================================================
+
+    - name: Display OpenSCAP stderr
+      ansible.builtin.debug:
+        var: post_remediation_scan.stderr_lines
+      when:
+        - post_remediation_scan.stderr_lines is defined
+        - post_remediation_scan.stderr_lines | length > 0
+
+
+    # ============================================================
+    # 10. Display return code
+    # ============================================================
+
+    - name: Display post-remediation scan return code
+      ansible.builtin.debug:
+        msg:
+          - "Server      : {{ inventory_hostname }}"
+          - "Return code : {{ post_remediation_scan.rc }}"
+
+
+    # ============================================================
+    # 11. Verify XML result
+    # ============================================================
+
+    - name: Check post-remediation XML result
+      ansible.builtin.stat:
+        path: "{{ post_remediation_results_file }}"
+      register: post_results_stat
+
+
+    # ============================================================
+    # 12. Verify HTML report
+    # ============================================================
+
+    - name: Check post-remediation HTML report
+      ansible.builtin.stat:
+        path: "{{ post_remediation_report_file }}"
+      register: post_report_stat
+
+
+    # ============================================================
+    # 13. Validate generated files
+    # ============================================================
+
+    - name: Verify post-remediation reports were generated
+      ansible.builtin.assert:
+        that:
+          - post_results_stat.stat.exists
+          - post_report_stat.stat.exists
+          - post_results_stat.stat.size > 0
+          - post_report_stat.stat.size > 0
+        fail_msg: >-
+          Post-remediation OpenSCAP reports were not generated correctly.
+
+
+    # ============================================================
+    # 14. Display generated file information
+    # ============================================================
+
+    - name: Display post-remediation report information
+      ansible.builtin.debug:
+        msg:
+          - "=================================================="
+          - "POST-REMEDIATION VALIDATION COMPLETED"
+          - "=================================================="
+          - "Server       : {{ inventory_hostname }}"
+          - ""
+          - "XML Result:"
+          - "{{ post_remediation_results_file }}"
+          - ""
+          - "HTML Report:"
+          - "{{ post_remediation_report_file }}"
+          - ""
+          - "XML Size    : {{ post_results_stat.stat.size }} bytes"
+          - "HTML Size   : {{ post_report_stat.stat.size }} bytes"
+          - ""
+          - "No remediation script was generated."
+          - "No remediation was executed."
+          - "=================================================="
+
+
+    # ============================================================
+    # 15. Create directory on Semaphore
+    # ============================================================
+
+    - name: Create server directory on Semaphore
+      ansible.builtin.file:
+        path: "{{ semaphore_server_dir }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      become: false
+
+
+    # ============================================================
+    # 16. Fetch post-remediation XML
+    # ============================================================
+
+    - name: Fetch post-remediation XML result to Semaphore
+      ansible.builtin.fetch:
+        src: "{{ post_remediation_results_file }}"
+        dest: "{{ semaphore_server_dir }}/cis_l1_post_remediation_validation_results_{{ inventory_hostname }}.xml"
+        flat: true
+
+
+    # ============================================================
+    # 17. Fetch post-remediation HTML
+    # ============================================================
+
+    - name: Fetch post-remediation HTML report to Semaphore
+      ansible.builtin.fetch:
+        src: "{{ post_remediation_report_file }}"
+        dest: "{{ semaphore_server_dir }}/cis_l1_post_remediation_validation_report_{{ inventory_hostname }}.html"
+        flat: true
+
+
+    # ============================================================
+    # 18. Final status
+    # ============================================================
+
+    - name: Post-remediation validation completed
+      ansible.builtin.debug:
+        msg:
+          - "=================================================="
+          - "POST-REMEDIATION VALIDATION COMPLETED"
+          - "=================================================="
+          - "Server: {{ inventory_hostname }}"
+          - ""
+          - "Files saved on Semaphore:"
+          - "{{ semaphore_server_dir }}/cis_l1_post_remediation_validation_results_{{ inventory_hostname }}.xml"
+          - "{{ semaphore_server_dir }}/cis_l1_post_remediation_validation_report_{{ inventory_hostname }}.html"
+          - ""
+          - "Original assessment files were NOT overwritten."
+          - "No remediation was generated or executed."
+          - "=================================================="
